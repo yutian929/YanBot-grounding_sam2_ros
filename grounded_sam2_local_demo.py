@@ -33,11 +33,11 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # use bfloat16
 
 # build SAM2 image predictor
+
 sam2_checkpoint = SAM2_CHECKPOINT
 model_cfg = SAM2_MODEL_CONFIG
 sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=DEVICE)
 sam2_predictor = SAM2ImagePredictor(sam2_model)
-
 # build grounding dino model
 grounding_model = load_model(
     model_config_path=GROUNDING_DINO_CONFIG, 
