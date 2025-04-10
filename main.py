@@ -7,7 +7,7 @@ import supervision as sv
 import pycocotools.mask as mask_util
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Union
-from torchvision.ops import box_convert
+from torchvision.ops import box_convert, nms
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from grounding_dino.groundingdino.util.inference import Model
@@ -26,9 +26,11 @@ class GroundingSAM2:
         grounding_dino_checkpoint: str,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         output_dir: str = "outputs/grounding_sam2",
-        box_threshold: float = 0.35,
+        box_threshold: float = 0.45,  # 提高默认阈值
         text_threshold: float = 0.25,
-        use_amp: bool = False,  # Added parameter to control automatic mixed precision
+        use_amp: bool = False,
+        nms_threshold: float = 0.5,  # 添加NMS阈值
+        use_nms: bool = False,  # 添加NMS开关参数
     ):
         """
         Initialize the GroundingSAM2 model with configurations.
@@ -42,12 +44,16 @@ class GroundingSAM2:
             output_dir: Directory to save outputs
             box_threshold: Box detection confidence threshold
             text_threshold: Text detection confidence threshold
+            nms_threshold: Non-Maximum Suppression threshold
+            use_nms: Whether to apply NMS to filter redundant detections
         """
         self.device = device
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.box_threshold = box_threshold
         self.text_threshold = text_threshold
+        self.nms_threshold = nms_threshold
+        self.use_nms = use_nms
         
         # Initialize SAM2
         self.sam2_model = build_sam2(sam2_model_config, sam2_checkpoint, device=device)
@@ -67,6 +73,48 @@ class GroundingSAM2:
                 torch.backends.cuda.matmul.allow_tf32 = True
                 torch.backends.cudnn.allow_tf32 = True
     
+    def apply_nms_per_class(self, detections: sv.Detections) -> sv.Detections:
+        """Apply NMS to each class separately"""
+        if len(detections) == 0:
+            return detections
+            
+        # 按类别分组处理
+        unique_classes = np.unique(detections.class_id)
+        filtered_boxes = []
+        filtered_confidence = []
+        filtered_class_ids = []
+        
+        for class_id in unique_classes:
+            # 获取该类别的所有检测结果
+            mask = detections.class_id == class_id
+            class_boxes = detections.xyxy[mask]
+            class_scores = detections.confidence[mask]
+            
+            # 应用NMS
+            keep_indices = nms(
+                torch.from_numpy(class_boxes),
+                torch.from_numpy(class_scores),
+                self.nms_threshold
+            )
+            
+            # 保存过滤后的结果
+            filtered_boxes.append(class_boxes[keep_indices.numpy()])
+            filtered_confidence.append(class_scores[keep_indices.numpy()])
+            filtered_class_ids.extend([class_id] * len(keep_indices))
+        
+        # 合并所有类别的结果
+        if filtered_boxes:
+            filtered_boxes = np.concatenate(filtered_boxes)
+            filtered_confidence = np.concatenate(filtered_confidence)
+            filtered_class_ids = np.array(filtered_class_ids)
+            
+            return sv.Detections(
+                xyxy=filtered_boxes,
+                confidence=filtered_confidence,
+                class_id=filtered_class_ids
+            )
+        return detections
+
     def process_image(
         self, 
         image_path: str = None, 
@@ -118,6 +166,10 @@ class GroundingSAM2:
             box_threshold=self.box_threshold,
             text_threshold=self.text_threshold,
         )
+        
+        # Apply NMS to filter redundant detections if enabled
+        if self.use_nms:
+            detections = self.apply_nms_per_class(detections)
         
         # Extract boxes for SAM2
         input_boxes = detections.xyxy
@@ -279,27 +331,35 @@ if __name__ == "__main__":
     SAM2_CHECKPOINT = "./checkpoints/sam2.1_hiera_base_plus.pt"
     SAM2_MODEL_CONFIG = "configs/sam2.1/sam2.1_hiera_b+.yaml"
     GROUNDING_DINO_CONFIG = "grounding_dino/groundingdino/config/GroundingDINO_SwinT_OGC.py"
-    # GROUNDING_DINO_CHECKPOINT = "gdino_checkpoints/groundingdino_swint_ogc.pth"
-    GROUNDING_DINO_CHECKPOINT = "/home/yutian/temp_projects/Grounding-Dino-FineTuning/weights/model_weights200.pth"
-    
-    # Initialize the model
-    model = GroundingSAM2(
-        sam2_model_config=SAM2_MODEL_CONFIG,
-        sam2_checkpoint=SAM2_CHECKPOINT,
-        grounding_dino_config=GROUNDING_DINO_CONFIG,
-        grounding_dino_checkpoint=GROUNDING_DINO_CHECKPOINT,
-        output_dir="outputs/example_run"
-    )
-    
-    # Process an image
-    results = model.process_image(
-        image_path="pepper.jpg",
-        classes=["peduncle", "fruit"]
-    )
-    
-    # Visualize results
-    annotated_image = model.visualize_results(results)
-    
-    # Save results to JSON
-    model.save_results(results)
-    print(f"results: {results['labels']}")
+    GROUNDING_DINO_CHECKPOINT_LIST = [
+        "gdino_checkpoints/groundingdino_swint_ogc.pth",
+        "/home/yutian/temp_projects/Grounding-Dino-FineTuning/weights/fine_tuning_weights/50.pth",
+        "/home/yutian/temp_projects/Grounding-Dino-FineTuning/weights/fine_tuning_weights/100.pth",
+        "/home/yutian/temp_projects/Grounding-Dino-FineTuning/weights/fine_tuning_weights/_best.pth",
+    ]
+    for idx, GROUNDING_DINO_CHECKPOINT in enumerate(GROUNDING_DINO_CHECKPOINT_LIST):
+        # Initialize the model
+        model = GroundingSAM2(
+            sam2_model_config=SAM2_MODEL_CONFIG,
+            sam2_checkpoint=SAM2_CHECKPOINT,
+            grounding_dino_config=GROUNDING_DINO_CONFIG,
+            grounding_dino_checkpoint=GROUNDING_DINO_CHECKPOINT,
+            output_dir=f"outputs/main/{idx}",
+            box_threshold=0.45,  # 提高检测阈值
+            text_threshold=0.25,
+            nms_threshold=0.5,   # 添加NMS阈值
+            use_nms=False,  # 控制是否使用NMS
+        )
+        
+        # Process an image
+        results = model.process_image(
+            image_path="pepper.jpg",
+            classes=["peduncle", "fruit"]
+        )
+        
+        # Visualize results
+        annotated_image = model.visualize_results(results)
+        
+        # Save results to JSON
+        model.save_results(results)
+        print(f"*** results of {GROUNDING_DINO_CHECKPOINT} ***\n{results['labels']}")
