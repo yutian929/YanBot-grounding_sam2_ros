@@ -279,7 +279,8 @@ if __name__ == "__main__":
     SAM2_CHECKPOINT = "./checkpoints/sam2.1_hiera_base_plus.pt"
     SAM2_MODEL_CONFIG = "configs/sam2.1/sam2.1_hiera_b+.yaml"
     GROUNDING_DINO_CONFIG = "grounding_dino/groundingdino/config/GroundingDINO_SwinT_OGC.py"
-    GROUNDING_DINO_CHECKPOINT = "gdino_checkpoints/groundingdino_swint_ogc.pth"
+    # GROUNDING_DINO_CHECKPOINT = "gdino_checkpoints/groundingdino_swint_ogc.pth"
+    GROUNDING_DINO_CHECKPOINT = "/home/yutian/temp_projects/Grounding-Dino-FineTuning/weights/model_weights200.pth"
     
     # Initialize the model
     model = GroundingSAM2(
@@ -292,8 +293,8 @@ if __name__ == "__main__":
     
     # Process an image
     results = model.process_image(
-        image_path="truck.jpg",
-        classes=["car", "tire"]
+        image_path="pepper.jpg",
+        classes=["peduncle", "fruit"]
     )
     
     # Visualize results
@@ -301,3 +302,4 @@ if __name__ == "__main__":
     
     # Save results to JSON
     model.save_results(results)
+    print(f"results: {results['labels']}")
